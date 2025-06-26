@@ -51,7 +51,7 @@ HP = {
     # Training parameters
     "learning_rate": 0.001,
     "batch_size": 16,
-    "epochs": 1,
+    "epochs": 20,
     "weight_decay": 1e-5,  # L2 regularization
 
     # Class weighting (balance)
