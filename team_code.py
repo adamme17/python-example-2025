@@ -432,8 +432,13 @@ def train_model(data_folder, model_folder, verbose):
 
     # 5) Create model, optimizer, and BCE with logit + pos_weight
     model = WaveletECGModel().to(device)
-    pos_weight_value = torch.tensor([HP["pos_weight"]], dtype=torch.float32).to(device)
-    criterion = nn.BCEWithLogitsLoss(pos_weight=pos_weight_value)
+    total_class_counts = {
+        0: negatives,
+        1: positives
+    }
+    criterion = DynamicCostSensitiveLoss(total_class_counts, device)
+    #pos_weight_value = torch.tensor([HP["pos_weight"]], dtype=torch.float32).to(device)
+    #criterion = nn.BCEWithLogitsLoss(pos_weight=pos_weight_value)
     optimizer = optim.Adam(model.parameters(), lr=HP["learning_rate"], weight_decay=HP["weight_decay"])
 
     best_val_loss = float('inf')
