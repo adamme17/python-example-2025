@@ -1,8 +1,8 @@
 #!/usr/bin/env python
 
 # team_code.py for PhysioNet Challenge 2025 - Chagas Disease Detection
-# Author: Saber Jelodari
-# Date 4th April 2025
+# Author: Saber Jelodari, Adam Bokun
+# Date 4th July 2025
 
 import os
 import pywt
@@ -28,6 +28,7 @@ from helper_code import (
     get_age,
     get_sex,
 )
+
 
 
 # Hyperparameters & Config
@@ -134,27 +135,27 @@ class DynamicCostSensitiveLoss(nn.Module):
         super().__init__()
         self.device = device
         self.total_counts = total_class_counts
-        self.eps = 1e-6  # prevent division by zero
+        self.eps = 1e-6
 
     def forward(self, logits, labels):
         probs = torch.sigmoid(logits)
         preds = (probs >= 0.5).float()
 
         # Counts per batch
-        y_true = labels.detach().cpu().numpy().flatten()
-        y_pred = preds.detach().cpu().numpy().flatten()
+        y_true = labels.detach()
+        y_pred = preds.detach()
 
-        tp = ((y_true == 1) & (y_pred == 1)).sum()
-        tn = ((y_true == 0) & (y_pred == 0)).sum()
-        fp = ((y_true == 0) & (y_pred == 1)).sum()
-        fn = ((y_true == 1) & (y_pred == 0)).sum()
+        tp = ((y_true == 1) & (y_pred == 1)).sum().float()
+        tn = ((y_true == 0) & (y_pred == 0)).sum().float()
+        fp = ((y_true == 0) & (y_pred == 1)).sum().float()
+        fn = ((y_true == 1) & (y_pred == 0)).sum().float()
 
         # FPR and FNR
         fpr = fp / (fp + tn + self.eps)
         fnr = fn / (fn + tp + self.eps)
         harmonic_fpr_fnr = 2 * (fpr * fnr) / (fpr + fnr + self.eps)
 
-        # Class weights: combine batch-level and total-level
+        # Class weights
         batch_pos = (labels == 1).sum().item()
         batch_neg = (labels == 0).sum().item()
         batch_total = batch_pos + batch_neg + self.eps
@@ -169,7 +170,7 @@ class DynamicCostSensitiveLoss(nn.Module):
         total_pos_weight = total_neg / total_total
         total_neg_weight = total_pos / total_total
 
-        # Final class weights (quadratic mean)
+        # Final class weights
         pos_weight = ((batch_pos_weight ** 2 + total_pos_weight ** 2) / 2) ** 0.5
         neg_weight = ((batch_neg_weight ** 2 + total_neg_weight ** 2) / 2) ** 0.5
 
@@ -182,83 +183,6 @@ class DynamicCostSensitiveLoss(nn.Module):
         weighted_loss = misclass_cost * weights.to(self.device) * bce_loss
 
         return weighted_loss.mean()
-
-class ChagasModel(nn.Module):
-    def __init__(self):
-        super().__init__()
-
-        # -------------------- CNN Layers --------------------
-        self.conv1 = nn.Conv1d(HP["cnn_channels"][0], HP["cnn_channels"][1], kernel_size=5, padding=2)
-        self.bn1   = nn.BatchNorm1d(HP["cnn_channels"][1])
-        self.conv2 = nn.Conv1d(HP["cnn_channels"][1], HP["cnn_channels"][2], kernel_size=5, padding=2)
-        self.bn2   = nn.BatchNorm1d(HP["cnn_channels"][2])
-        self.conv3 = nn.Conv1d(HP["cnn_channels"][2], HP["cnn_channels"][3], kernel_size=5, padding=2)
-        self.bn3   = nn.BatchNorm1d(HP["cnn_channels"][3])
-
-        self.pool = nn.MaxPool1d(2)
-        self.dropout = nn.Dropout(HP["dropout_rate"])
-
-
-        self.adaptive_pool = nn.AdaptiveAvgPool1d(50)
-
-        # -------------------- LSTM Layer --------------------
-        self.lstm = nn.LSTM(
-            input_size=HP["cnn_channels"][3],
-            hidden_size=HP["rnn_hidden_size"],
-            num_layers=HP["rnn_num_layers"],
-            batch_first=True,
-            bidirectional=True
-        )
-
-        # -------------------- FC Layers ---------------------
-        self.fc1 = nn.Linear(2 * HP["rnn_hidden_size"], HP["fc_size"])
-        self.fc2 = nn.Linear(HP["fc_size"], 1)
-
-    def forward(self, x):
-        # x shape: [batch, 12, time]
-
-        # CNN feature extraction
-        x = self.conv1(x)
-        x = self.bn1(x)
-        x = F.relu(x)
-        x = self.pool(x)
-        x = self.dropout(x)
-
-        x = self.conv2(x)
-        x = self.bn2(x)
-        x = F.relu(x)
-        x = self.pool(x)
-        x = self.dropout(x)
-
-        x = self.conv3(x)
-        x = self.bn3(x)
-        x = F.relu(x)
-        x = self.pool(x)
-        x = self.dropout(x)
-
-        # Now shape: [batch, channels, time], e.g. [batch, 128, time//8]
-
-        # Adaptive pooling to reduce time dimension
-        x = self.adaptive_pool(x)  # -> [batch, 128, 50]
-
-        # Prepare for LSTM
-        x = x.transpose(1, 2)      # [batch, 50, 128]
-
-        # LSTM
-        lstm_out, (hn, cn) = self.lstm(x)
-
-        # We can take the mean over time dimension
-        x = torch.mean(lstm_out, dim=1)
-
-        # FC
-        x = F.relu(self.fc1(x))
-        x = self.dropout(x)
-        x = self.fc2(x)
-
-        return x
-
-
-# Data Processing / Resampling / Augmentation
 
 def resample_to_400Hz(signals, original_fs):
     """Resample signals to 400 Hz if needed."""
@@ -437,8 +361,6 @@ def train_model(data_folder, model_folder, verbose):
         1: positives
     }
     criterion = DynamicCostSensitiveLoss(total_class_counts, device)
-    #pos_weight_value = torch.tensor([HP["pos_weight"]], dtype=torch.float32).to(device)
-    #criterion = nn.BCEWithLogitsLoss(pos_weight=pos_weight_value)
     optimizer = optim.Adam(model.parameters(), lr=HP["learning_rate"], weight_decay=HP["weight_decay"])
 
     best_val_loss = float('inf')
